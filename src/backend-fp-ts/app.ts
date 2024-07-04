@@ -1,6 +1,7 @@
+import * as T from 'fp-ts/lib/Task';
 import * as TE from 'fp-ts/lib/TaskEither';
 import { pipe } from 'fp-ts/lib/function';
-import express from 'express';
+import express, { Request, Response } from 'express';
 import axios from 'axios';
 import rateLimit from 'express-rate-limit';
 import cors from 'cors';
@@ -28,57 +29,77 @@ app.use(apiLimiter);
 app.use(cors(corsOptions));
 
 const handler = (
-  data: { from: string; to: string; amount: number },
-  res: express.Response
-) =>
-  pipe(
+  { body }: Request,
+  res: Response
+): Promise<Response<Express.CustomErrorResponse, Express.CustomResponse>> => {
+  console.log(body);
+  const resultPipe = pipe(
     TE.tryCatch(
       () =>
-        axios<{ data: any }, { data: any }>({
-          baseURL: `${BASE_API_URL}/${API_KEY}/pair/${data.from}/${data.to}/${data.amount}`,
+        axios({
+          baseURL: `${BASE_API_URL}/${API_KEY}/pair/${body.from}/${body.to}/${body.amount}`,
           method: 'get',
           timeout: 1000,
           headers: { 'X-Custom-Header': 'foobar' }
         }),
-      e => {
-        console.log(e);
+      e =>
         res.json({
           message: `Error converting currency`,
           details: toError(e).message
-        });
-      }
+        }) as Response<Express.CustomErrorResponse, Express.CustomResponse>
     ),
+    check => check, // check: TE.TaskEither<express.Response<Express.CustomErrorResponse, Express.CustomResponse>, AxiosResponse<any, any>>
     TE.chain(response =>
       pipe(
         response,
         TE.fromPredicate(
           response => response.data && response.data.result === 'success',
-          response => {
-            console.log(response);
+          response =>
             res.json({
               message: 'Error converting currency',
               details: response
-            });
-          }
+            }) as Response<Express.CustomErrorResponse, Express.CustomResponse>
         ),
-        TE.map(_ =>
-          res.json({
-            base: data.from,
-            target: data.to,
-            conversionRate: response.data.conversion_rate,
-            convertedAmount: response.data.conversion_result
-          })
-        )
+        check => check, // check: TE.TaskEither<express.Response<Express.CustomErrorResponse, Express.CustomResponse>, AxiosResponse<any, any>>
+        TE.map(
+          _ =>
+            res.json({
+              base: body.from,
+              target: body.to,
+              conversionRate: response.data.conversion_rate,
+              convertedAmount: response.data.conversion_result
+            }) as Response<Express.CustomErrorResponse, Express.CustomResponse>
+        ),
+        check => check // check: TE.TaskEither<express.Response<Express.CustomErrorResponse, Express.CustomResponse>, express.Response<Express.CustomErrorResponse, Express.CustomResponse>>
       )
     ),
-    TE.toUnion
+    check => check, // check: TE.TaskEither<express.Response<Express.CustomErrorResponse, Express.CustomResponse>, express.Response<Express.CustomErrorResponse, Express.CustomResponse>>
+    TE.toUnion,
+    check => check // check: Task<express.Response<Express.CustomErrorResponse, Express.CustomResponse>>
   )();
+  // con (); Promise<express.Response<Express.CustomErrorResponse, Express.CustomResponse>>
+  // senza (): Task<Response<CustomErrorResponse, CustomResponse>>
+  return resultPipe;
+};
 
-app.post('/api/convert', async (req, res) =>
-  handler(
-    { from: req.body.from, to: req.body.to, amount: req.body.amount },
-    res
-  )
-);
+/*
+TE.toUnion + (): mi torna  => Promise<....>
+TE.toUnion: mi torna => Task<...>
+senza TE.toUnion ma con () mi torna => Promise<Either<...>>
+senza TE.toUnion e senza () mi torna => TE.TaskEither<..>
+
+Il TE.toUnion passo da un TE.TaskEither ad un Task
+Eseguendo la funzione con () passo da un Task ad una Promise
+
+Se uso TE.fold => faccio T.of di entrambi
+TE.fold(
+  T.of,
+  T.of
+),
+cioè passo da un TE ad un T ed eseguendo () ho una Promise
+
+*/
+
+app.post('/api/convert', handler);
 
 app.listen(PORT, () => console.log(`Server is up on ${PORT}`));
