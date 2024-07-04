@@ -5,6 +5,7 @@ import axios from 'axios';
 import rateLimit from 'express-rate-limit';
 import cors from 'cors';
 import { toError } from 'fp-ts/lib/Either';
+const dotenv = require('dotenv').config();
 
 const PORT = process.env.PORT || 5005;
 const app = express();
