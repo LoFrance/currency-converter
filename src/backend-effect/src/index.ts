@@ -1,9 +1,10 @@
-import { Effect, pipe } from 'effect';
+import { Effect, Either, pipe } from 'effect';
 
 import express, { Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import cors from 'cors';
 import { Schema } from '@effect/schema';
+import { FiberFailure } from 'effect/Runtime';
 
 const PORT = process.env.PORT || 5005;
 const app = express();
@@ -34,41 +35,49 @@ const ApiSchema = Schema.Struct({
 });
 type ApiResponse = Schema.Schema.Type<typeof ApiSchema>;
 
-const handler = ({ body }: Request, res: Response): any => {
-  const callToApi = pipe(
-    Effect.tryPromise({
-      try: () =>
-        fetch(
-          `${BASE_API_URL}/${API_KEY}/pair/${body.from}/${body.to}/${body.amount}`
-        ).then(r => r.json()),
-      catch: () =>
-        res.json({
-          message: 'Errore',
-          details: `Errore nella fase di recupero dati dall'API`
-        })
-    }),
-    Effect.flatMap(unknownData => Schema.decodeUnknown(ApiSchema)(unknownData)),
-    Effect.flatMap(decodedData =>
-      decodedData.result === 'success'
-        ? Effect.succeed(decodedData)
-        : Effect.fail(
-            res.json({
-              message: 'Chiamata fallita',
-              details: `Risposta dal server ${JSON.stringify(decodedData)}`
-            })
-          )
-    ),
-    Effect.map(decodedData =>
-      res.json({
-        result: decodedData.result,
-        base: decodedData.base_code,
-        target: decodedData.target_code,
-        conversionRate: decodedData.conversion_rate,
-        convertedAmount: decodedData.conversion_result
-      })
+const fetchData = ({ body }: Request, res: Response) =>
+  Effect.tryPromise({
+    try: () =>
+      fetch(
+        `${BASE_API_URL}/${API_KEY}/pair/${body.from}/${body.to}/${body.amount}`
+      ).then(res => res.json()),
+    catch: () => ({
+      message: 'Errore',
+      details: `Errore nella fase di recupero dati dall'API`
+    })
+  });
+
+const decodeData = (unknownData: any) => {
+  const resDecode = Schema.decodeEither(ApiSchema)(unknownData);
+  return Either.isLeft(resDecode)
+    ? Effect.fail({ message: 'Fail to decode' })
+    : Effect.succeed(resDecode);
+};
+
+const sendData = (
+  decodedData: Effect.Effect<ApiResponse, { message: string }>
+) =>
+  pipe(
+    decodedData,
+    Effect.flatMap(a =>
+      a.result === 'success'
+        ? Effect.succeed(a)
+        : Effect.fail({
+            message: 'Chiamata fallita',
+            details: `Risposta dal server ${JSON.stringify(decodedData)}`
+          })
     )
   );
-  return Effect.runPromise(callToApi);
+
+const handler = (req: Request, res: Response) => {
+  const program = Effect.gen(function* () {
+    const fetchedData = yield* fetchData(req, res);
+    const data = yield* decodeData(fetchedData);
+    return yield* sendData(data);
+  });
+  return Effect.runPromise(program)
+    .then(a => res.json(a))
+    .catch((e: FiberFailure) => res.json(JSON.parse(e.message)));
 };
 
 app.post('/api/convert', handler);
